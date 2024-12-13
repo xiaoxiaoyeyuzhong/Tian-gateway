@@ -31,6 +31,13 @@
         <spring-cloud.version>2021.0.3</spring-cloud.version>
     </properties>
     <dependencies>
+        <!--公共服务依赖-->
+        <dependency>
+            <groupId>com.fdt</groupId>
+            <artifactId>TianAPI-common</artifactId>
+            <version>0.0.1-SNAPSHOT</version>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.cloud</groupId>
             <artifactId>spring-cloud-starter-gateway</artifactId>
@@ -64,6 +71,18 @@
             <groupId>com.fdt</groupId>
             <artifactId>tian-client-sdk</artifactId>
             <version>0.0.1-SNAPSHOT</version>
+        </dependency>
+
+        <!--dubbo-nacos-->
+        <dependency>
+            <groupId>org.apache.dubbo</groupId>
+            <artifactId>dubbo-spring-boot-starter</artifactId>
+            <version>3.3.0</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.dubbo</groupId>
+            <artifactId>dubbo-nacos-spring-boot-starter</artifactId>
+            <version>3.3.0</version>
         </dependency>
 
     </dependencies>

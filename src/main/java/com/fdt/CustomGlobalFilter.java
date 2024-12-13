@@ -1,8 +1,14 @@
 package com.fdt;
 
 import com.fdt.clientsdk.utils.SignUtils;
+import com.fdt.tianAPICommon.model.entity.InterfaceInfo;
+import com.fdt.tianAPICommon.model.entity.User;
+import com.fdt.tianAPICommon.service.InnerInterfaceInfoService;
+import com.fdt.tianAPICommon.service.InnerUserInterfaceInfoService;
+import com.fdt.tianAPICommon.service.InnerUserService;
 import com.fdt.utils.RedisUtils;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.dubbo.config.annotation.DubboReference;
 import org.reactivestreams.Publisher;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.cloud.gateway.filter.GlobalFilter;
@@ -31,19 +37,33 @@ import java.util.concurrent.TimeUnit;
 @Component
 public class CustomGlobalFilter implements GlobalFilter, Ordered {
 
+    @DubboReference
+    private InnerInterfaceInfoService innerInterfaceInfoService;
+
+    @DubboReference
+    private InnerUserService innerUserService;
+
+    @DubboReference
+    private InnerUserInterfaceInfoService innerUserInterfaceInfoService;
+
     private static final List<String> IP_WHITE_LIST = Arrays.asList("127.0.0.1");
 
+    private static final String INTERFACE_HOST = "http://localhost:8123";
+
     @Resource
-    RedisUtils redisUtils=  new RedisUtils();
+    RedisUtils redisUtils = new RedisUtils();
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
 
         // 1. 用户发送请求到API网关
         // 2. 请求日志
         ServerHttpRequest request = exchange.getRequest();
+
+        String path = INTERFACE_HOST + request.getPath().value();
+        String method = request.getMethod().toString();
         log.info("请求唯一标识: request id: {}", request.getId());
-        log.info("请求路径: request path: {}", request.getPath());
-        log.info("请求方法: request method: {}", request.getMethod());
+        log.info("请求路径: request path: {}", path);
+        log.info("请求方法: request method: {}", method);
         log.info("请求参数: request query: {}", request.getQueryParams());
         String sourceAddress = request.getLocalAddress().getHostString();
         log.info("请求来源地址: request source address: {}", sourceAddress);
@@ -62,11 +82,23 @@ public class CustomGlobalFilter implements GlobalFilter, Ordered {
         String timestamp = headers.getFirst("timestamp");
         String sign = headers.getFirst("sign");
         String body = headers.getFirst("body");
-        //校验用户标识 todo 接入后端平台后，应该查询数据库，获取用户标识
-        // equals让不为null的字符串调用
-        if(!"fdt".equals(accessKey)){
+        //校验用户标识
+        User invokeUser = null;
+        try{
+            //调用内部的公共服务，根据accessKey获取用户信息
+            invokeUser = innerUserService.getInvokeUser(accessKey);
+        } catch (Exception e){
+            // 捕获异常，记录日志
+            log.error("getInvokeUser error",e);
+        }
+        if(invokeUser == null){
+            // 没有对应accessKey的用户
             return handleNoAuth(response);
         }
+        // equals让不为null的字符串调用
+//        if(!"fdt".equals(accessKey)){
+//            return handleNoAuth(response);
+//        }
         //随机数过期时间应该在时间戳过期之后，防止同时过期导致漏洞。
         //如果随机数过期删除，时间戳没到过期时间，当这个请求被重放的时候，校验就失效了。
         //校验随机数
@@ -80,15 +112,35 @@ public class CustomGlobalFilter implements GlobalFilter, Ordered {
         if(System.currentTimeMillis()/1000 - Long.parseLong(timestamp) >= 300){
             return handleNoAuth(response);
         }
-        //校验签名 todo 接入后端平台后应该查询数据库，获取密钥
-        if(!SignUtils.genSign(body, "123456").equals(sign)){
+        //校验签名
+        // 从获取的用户信息中获取用户的密钥
+        String secretKey = invokeUser.getSecretKey();
+        // 使用获取的密钥和请求体进行签名
+        String serverSign = SignUtils.genSign(body, secretKey);
+        if(sign == null || !sign.equals(serverSign)){
             return handleNoAuth(response);
         }
+//        if(!SignUtils.genSign(body, "123456").equals(sign)){
+//            return handleNoAuth(response);
+//        }
         // 5. 检测请求的接口是否存在
-        // todo 接入后端平台后，应该查询数据库，接口是否存在，请求方法是否匹配，请求参数是否匹配
+        InterfaceInfo interfaceInfo = null;
+        try{
+            // 尝试根据请求路径和请求方法获取接口信息 todo 数据库添加服务器字段，获取真实的服务器地址
+            interfaceInfo = innerInterfaceInfoService.getInterfaceInfo(path, method);
+        } catch (Exception e){
+            // 捕获异常，记录日志
+            log.error("getInterfaceInfo error",e);
+        }
+        // 检查获取的接口信息是否为空
+        if(interfaceInfo == null){
+            return handleInvokeError(response);
+        }
+        // 用户是否还有接口的调用次数
+
         // 6. **请求转发，调用接口**
 //        Mono<Void> filter = chain.filter(exchange);
-        return handleResponse(exchange, chain);
+        return handleResponse(exchange, chain,interfaceInfo.getId(),invokeUser.getId());
 
 //        return filter;
     }
@@ -104,7 +156,7 @@ public class CustomGlobalFilter implements GlobalFilter, Ordered {
      * @param chain
      * @return
      */
-    public Mono<Void> handleResponse(ServerWebExchange exchange, GatewayFilterChain chain) {
+    public Mono<Void> handleResponse(ServerWebExchange exchange, GatewayFilterChain chain,long interfaceInfoId,long userId) {
         try {
             // 获取原始的响应对象
             ServerHttpResponse originalResponse = exchange.getResponse();
@@ -130,7 +182,12 @@ public class CustomGlobalFilter implements GlobalFilter, Ordered {
                             // 返回一个处理后的响应体
                             // (这里就理解为它在拼接字符串,它把缓冲区的数据取出来，一点一点拼接好)
                             return super.writeWith(fluxBody.map(dataBuffer -> {
-                                // todo 调用成功，接口调用次数+1
+                                // 调用成功，接口调用次数+1
+                                try{
+                                    innerUserInterfaceInfoService.invokeCount(interfaceInfoId,userId);
+                                }catch (Exception e){
+                                    log.error("invokeCount error",e);
+                                }
                                 // 读取响应体的内容并转换为字节数组
                                 byte[] content = new byte[dataBuffer.readableByteCount()];
                                 dataBuffer.read(content);

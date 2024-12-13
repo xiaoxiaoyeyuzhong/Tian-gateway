@@ -24,6 +24,24 @@ spring:
 #          predicates:
 #            - After=2017-01-20T17:42:47.789-07:00[America/Denver]
 
+# 以下配置指定了应用的名称、使用的协议（Dubbo）、注册中心的类型（Nacos）和地址
+dubbo:
+  application:
+    # 设置应用的名称
+    name: dubbo-springboot-demo-consumer
+    qos-enable: true
+    qos-port: 22222
+    qos-accept-foreign-ip: false
+  # 指定使用 Dubbo 协议，且端口设置为 -1，表示随机分配可用端口,但是可能都在22222
+  protocol:
+    name: dubbo
+    port: 22221
+  registry:
+    # 配置注册中心为 Nacos，使用的地址是 nacos://localhost:8848
+    id: nacos-registry
+    address: nacos://localhost:8848
+
+
 # 日志打印配置
 logging:
   level:
